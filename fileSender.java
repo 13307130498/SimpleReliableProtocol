@@ -7,7 +7,10 @@ import java.util.concurrent.Semaphore;
 import java.nio.*;
 import java.util.zip.*;
 
-public class fileSender{
+public class FileSender{
+	final static int THREADNUM = 100;
+	final static int BUFFERSIZE = 401;
+	
 	static InetSocketAddress addr;
 	static int port;
 	static DatagramSocket sk;
@@ -15,16 +18,16 @@ public class fileSender{
 	static File file;
 	static Semaphore filemutex;
 	static Semaphore countmutex;
+	static Semaphore respmutex;
 	static int packetNumber;
-	static int[] ackresp = new int [21];
-	static int[] threadFinished = new int [21];
+	static int[] ackresp = new int [BUFFERSIZE];
+	static int[] threadFinished = new int [BUFFERSIZE];
 	static boolean allSenderFinished;
 	static boolean timeNotOut0 = true;
 	static boolean fileEnd = false;
 	static int fileEndACK;
-	
 	//receiver
-	static Runnable receiver = new Runnable(){
+	static class receiver implements Runnable{
 		byte[] resp;
 		ByteBuffer respb;
 		DatagramPacket ack;
@@ -38,7 +41,7 @@ public class fileSender{
 				// TODO Auto-generated catch block
 				e1.printStackTrace();
 			}
-			System.out.println("receiver starting...");
+			//System.out.println("receiver starting...");
 			while(!allSenderFinished){
 				resp = new byte[100];
 				respb = ByteBuffer.wrap(resp);
@@ -46,7 +49,7 @@ public class fileSender{
 				crc = new CRC32();
 				try {
 					sk.receive(ack);
-					System.out.println("receiveing...");
+					//System.out.println("receiveing...");
 				} catch (SocketTimeoutException e) {
 					// TODO Auto-generated catch block
 					//e.printStackTrace();
@@ -57,7 +60,7 @@ public class fileSender{
 				}
 				if (ack.getLength() < 8)
 				{
-					System.out.println("Pkt too short");
+					//System.out.println("Pkt too short");
 					continue;
 				}
 				respb.rewind();
@@ -66,11 +69,19 @@ public class fileSender{
 				crc.update(resp, 8, ack.getLength() - 8);
 				if(chksum == crc.getValue()){
 					sequenceNumber = respb.getInt();
-					System.out.println("receive ack:" + sequenceNumber);
-					System.out.println("receive ack while ackresp[0] = :" + ackresp[0]);
+					//System.out.println("receive ack:" + sequenceNumber);
+					//System.out.println("receive ack while ackresp[0] = :" + ackresp[0]);
+					try {
+						respmutex.acquire();
+					} catch (InterruptedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
 					if(sequenceNumber != -1){
-						if(sequenceNumber < ackresp[0])
+						if(sequenceNumber < ackresp[0] || sequenceNumber > ackresp[0] + BUFFERSIZE - 2){
+							respmutex.release();
 							continue;
+						}
 						nck = respb.getLong();
 						if(nck == 1){
 							ackresp[sequenceNumber - ackresp[0] + 1] = 1;
@@ -88,16 +99,17 @@ public class fileSender{
 							fileEndACK = -1;
 						}
 					}
+					respmutex.release();
 				}
 				
 			}
-			System.out.println("receiver ends.");
+			//System.out.println("receiver ends.");
 			System.exit(0);
 		}
-	};
+	}
 	
 	//sender
-	static Runnable sender = new Runnable(){
+	static class sender implements Runnable{
 		DatagramPacket pkt;
 		byte[] data;
 		ByteBuffer b;
@@ -111,15 +123,9 @@ public class fileSender{
 				timeNotOut = false;
 			}
 		}
-		Runnable timer = new Runnable(){
-			public void run(){
-				Timer timer = new Timer();
-				timer.schedule(new task(), 10);
-			}
-		};
 		public void run(){
 
-			System.out.println("Sender starting...");
+			//System.out.println("Sender starting...");
 			pkt = null;
 			data = new byte[1000];
 			b = ByteBuffer.wrap(data);
@@ -144,23 +150,7 @@ public class fileSender{
 						// TODO Auto-generated catch block
 						e1.printStackTrace();
 					}
-					filemutex.release();
-					System.out.println("num = " + num);
-					if(num == -1 && fileEnd){
-						int i;
-						for(i = 0; i < 1; i++){
-							if(threadFinished[i] == 0){
-								break;
-							}
-						}
-						threadFinished[i++] = 1;
-						System.out.println("thread finished: " + i);
-						if(i == 1){
-							allSenderFinished = true;
-						}
-						return;
-					}
-					else if(num != -1){
+					if(num != -1){
 						try {
 							countmutex.acquire();
 						} catch (InterruptedException e) {
@@ -170,11 +160,29 @@ public class fileSender{
 						sequenceNumber = packetNumber;
 						packetNumber++;
 						countmutex.release();
+					}
+					filemutex.release();
+					//System.out.println("num = " + num);
+					if(num == -1 && fileEnd){
+						int i;
+						for(i = 0; i < THREADNUM; i++){
+							if(threadFinished[i] == 0){
+								break;
+							}
+						}
+						threadFinished[i++] = 1;
+						//System.out.println("thread finished: " + i);
+						if(i == THREADNUM){
+							allSenderFinished = true;
+						}
+						return;
+					}
+					else if(num != -1){
 						b.rewind();
 						b.putLong(0);
 						b.putInt(sequenceNumber);
 						b.putInt(num);
-						System.out.println("produce packet:" + sequenceNumber);
+						//System.out.println("produce packet:" + sequenceNumber);
 						crc.reset();
 						crc.update(data, 8, data.length - 8);
 						long chksum = crc.getValue();
@@ -183,7 +191,7 @@ public class fileSender{
 					}
 					else{
 						fileEnd = true;
-						System.out.println("hello");
+						//System.out.println("hello");
 						sequenceNumber = -1;
 						b.rewind();
 						b.putLong(0);
@@ -198,15 +206,15 @@ public class fileSender{
 				}
 				try {
 					pkt = new DatagramPacket(data, data.length, addr);
-					System.out.println("send packet:" + sequenceNumber);
+					//System.out.println("send packet:" + sequenceNumber);
 					sk.send(pkt);
 				} catch (IOException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
 				timeNotOut = true;
-				Thread newThread = new Thread(timer);
-				newThread.start();
+				Timer timer = new Timer();
+				timer.schedule(new task(), 10);
 				if(sequenceNumber == -1){
 					while(timeNotOut && fileEndACK == 0){
 						try {
@@ -225,8 +233,14 @@ public class fileSender{
 					}
 				}
 				else{
+					try {
+						respmutex.acquire();
+					} catch (InterruptedException e1) {
+						// TODO Auto-generated catch block
+						e1.printStackTrace();
+					}
 					int arrayIndex = sequenceNumber - ackresp[0] + 1;
-					while(arrayIndex < 21 && arrayIndex > 0 && ackresp[arrayIndex] == 0 && timeNotOut){
+					while(arrayIndex < BUFFERSIZE && arrayIndex > 0 && ackresp[arrayIndex] == 0 && timeNotOut){
 						try {
 							Thread.sleep(1);
 						} catch (InterruptedException e) {
@@ -236,12 +250,15 @@ public class fileSender{
 					}
 					if(arrayIndex <= 0){
 						getNextPck = true;
+						respmutex.release();
+						timer.cancel();
 						continue;
 					}
-					else if(arrayIndex < 21 && ackresp[arrayIndex] == 1){
+					else if(arrayIndex < BUFFERSIZE && ackresp[arrayIndex] == 1){
+						//System.out.println(ackresp[0] + " and " + arrayIndex);
 						getNextPck = true;
 						int i;
-						for(i = 1; i < 21; i++){
+						for(i = 1; i < BUFFERSIZE; i++){
 							if(ackresp[i] == 1){
 								ackresp[0]++;
 							}
@@ -249,32 +266,36 @@ public class fileSender{
 								break;
 							}
 						}
-						for(int j = i; j < 21; j++){
+						for(int j = i; j < BUFFERSIZE; j++){
 							ackresp[j - i + 1] = ackresp[j];
 						}
 						while(i > 1){
-							ackresp[22 - i] = 0;
+							ackresp[BUFFERSIZE + 1 - i] = 0;
 							i--;
 						}
 					}
-					else if(arrayIndex < 21) {
+					else if(arrayIndex < BUFFERSIZE) {
 						getNextPck = false;
 						ackresp[arrayIndex] = 0;
 					}
 					else{
 						getNextPck = false;
 					}
+					respmutex.release();
 				}
-				
+				timer.cancel();
 			}
 		}
-	};
+	}	
+		
+		
+		
 
 	//task0
 	static class task0 extends TimerTask{
 		public void run(){
 			timeNotOut0 = false;
-			System.out.println("timeNotOut0 = " + timeNotOut0);
+			//System.out.println("timeNotOut0 = " + timeNotOut0);
 		}
 	}
 	
@@ -295,9 +316,12 @@ public class fileSender{
 		input = new FileInputStream(file);
 		filemutex = new Semaphore(1, true);
 		countmutex = new Semaphore(1, true);
+		respmutex = new Semaphore(1, true);
 		packetNumber = 0;
-		for(int i = 0; i < 21; i++){
+		for(int i = 0; i < BUFFERSIZE; i++){
 			ackresp[i] = 0;
+		}
+		for(int i = 0; i < THREADNUM; i++){
 			threadFinished[i] = 0;
 		}
 		allSenderFinished = false;
@@ -318,28 +342,29 @@ public class fileSender{
 		long chksum = crc.getValue();
 		b.rewind();
 		b.putLong(chksum);
-		Thread rec = new Thread(receiver);
-		rec.start();
+		Thread[] rec = new Thread[THREADNUM];
+		for(int i = 0; i < THREADNUM; i++){
+			rec[i] = new Thread(new receiver());
+			rec[i].start();
+		}
 		while(true){
-			System.out.println("again==");
+			//System.out.println("again==");
 			pkt = new DatagramPacket(data, data.length, addr);
 			sk.send(pkt);
-			System.out.println("send packet: 0");
+			//System.out.println("send packet: 0");
 			timeNotOut0 = true;
 			Timer timer = new Timer();
 			timer.schedule(new task0(), 10);
 			int arrayIndex = sequenceNumber - ackresp[0] + 1;
-			System.out.println(sequenceNumber);
-			System.out.println(timeNotOut0);
+			//System.out.println(sequenceNumber);
+			//System.out.println(timeNotOut0);
 			while(ackresp[arrayIndex] != 1 && timeNotOut0){
 				Thread.sleep(1);
 			}
-			System.out.println("mada2");
 			timer.cancel();
 			if(ackresp[arrayIndex] == 1){
-				System.out.println("test");
 				int i;
-				for(i = 1; i < 21; i++){
+				for(i = 1; i < BUFFERSIZE; i++){
 					if(ackresp[i] == 1){
 						ackresp[0]++;
 					}
@@ -347,21 +372,21 @@ public class fileSender{
 						break;
 					}
 				}
-				for(int j = i; j < 21; j++){
+				for(int j = i; j < BUFFERSIZE; j++){
 					ackresp[j - i + 1] = ackresp[j];
 				}
 				while(i > 1){
-					ackresp[22 - i] = 0;
+					ackresp[BUFFERSIZE + 1 - i] = 0;
 					i--;
 				}
 				break;
 			}
 		}
 		packetNumber++;
-		Thread sen;
-		for(int i = 0; i < 1; i++){
-			sen = new Thread (sender);
-			sen.start();
+		Thread[] sen = new Thread[THREADNUM];
+		for(int i = 0; i < THREADNUM; i++){
+			sen[i] = new Thread (new sender());
+			sen[i].start();
 		}
 	}
 

@@ -5,12 +5,12 @@ import java.util.*;
 import java.nio.*;
 import java.util.zip.*;
 
-public class fileReceiver {
-
+public class FileReceiver {
+	final static int BUFFERSIZE = 401;
 	static int packetNumber;
-	static int[] ackresp = new int [21];
-	static byte[][] buffer = new byte[21][];
-	static int[] bufferlen = new int[21];
+	static int[] ackresp = new int [BUFFERSIZE];
+	static byte[][] buffer = new byte[BUFFERSIZE][];
+	static int[] bufferlen = new int[BUFFERSIZE];
 	static File file;
 	static FileOutputStream output;
 	static int lastPacketNumber;
@@ -32,7 +32,7 @@ public class fileReceiver {
 		int datalength;
 		packetNumber = 0;
 		lastPacketNumber = -1;
-		for(int i = 0; i < 21; i++){
+		for(int i = 0; i < BUFFERSIZE; i++){
 			ackresp[i] = 0;
 		}
 		while(true)
@@ -44,7 +44,7 @@ public class fileReceiver {
 			sk.receive(pkt);
 			if (pkt.getLength() < 8)
 			{
-				System.out.println("Pkt too short");
+				//System.out.println("Pkt too short");
 				continue;
 			}
 			b.rewind();
@@ -52,7 +52,7 @@ public class fileReceiver {
 			sequenceNumber = b.getInt();
 			datalength = b.getInt();
 			//test
-			System.out.println("receive packet:" + sequenceNumber);
+			//System.out.println("receive packet:" + sequenceNumber);
 			
 			crc.reset();
 			crc.update(data, 8, pkt.getLength() - 8);
@@ -60,7 +60,7 @@ public class fileReceiver {
 			// System.out.println("Received CRC:" + crc.getValue() + " Data:" + bytesToHex(data, pkt.getLength()));
 			if (crc.getValue() != chksum)
 			{
-				System.out.println("Pkt corrupt");
+				//System.out.println("Pkt corrupt");
 				/*resp = new byte[100];
 				respb = ByteBuffer.wrap(resp);
 				respb.putLong(0);
@@ -77,11 +77,11 @@ public class fileReceiver {
 			}
 			else
 			{
-				if(sequenceNumber == -1){
+				if(sequenceNumber == -1 && lastPacketNumber == -1){
 					lastPacketNumber = datalength;
-					System.out.println("lastPacketNumber:" + lastPacketNumber + "==ackresp[0] :" + ackresp[0]);
+					//System.out.println("lastPacketNumber:" + lastPacketNumber + "==ackresp[0] :" + ackresp[0]);
 					if(lastPacketNumber != -1 && ackresp[0] > lastPacketNumber){
-						System.out.println("lastPacketNumber");
+						//System.out.println("File closed===================");
 						output.close();
 					}
 					resp = new byte[100];
@@ -97,6 +97,23 @@ public class fileReceiver {
 					DatagramPacket ack = new DatagramPacket(resp, 0, resp.length,
 							pkt.getSocketAddress());
 					sk.send(ack);
+					//System.out.println("=======================sendack:" + sequenceNumber);
+				}
+				else if(sequenceNumber == -1){
+					resp = new byte[100];
+					respb = ByteBuffer.wrap(resp);
+					respb.putLong(0);
+					respb.putInt(sequenceNumber);
+					respb.putLong(1);
+					crc.reset();
+					crc.update(resp, 8, resp.length - 8);
+					chksum = crc.getValue();
+					respb.rewind();
+					respb.putLong(chksum);
+					DatagramPacket ack = new DatagramPacket(resp, 0, resp.length,
+							pkt.getSocketAddress());
+					sk.send(ack);
+					//System.out.println("=======================sendack:" + sequenceNumber);
 				}
 				else{
 					int arrayIndex = sequenceNumber - ackresp[0] + 1;
@@ -113,9 +130,10 @@ public class fileReceiver {
 						respb.putLong(chksum);
 						DatagramPacket ack = new DatagramPacket(resp, 0, resp.length,
 								pkt.getSocketAddress());
+						//System.out.println("=======================sendack:" + sequenceNumber);
 						sk.send(ack);
 					}
-					else if(arrayIndex < 21){
+					else if(arrayIndex < BUFFERSIZE){
 						ackresp[arrayIndex] = 1;
 						if(sequenceNumber == 0 && ackresp[0] == 0){
 							String filename = "";
@@ -134,7 +152,7 @@ public class fileReceiver {
 							bufferlen[arrayIndex] = datalength;
 						}
 						int i;
-						for(i = 1; i < 21; i++){
+						for(i = 1; i < BUFFERSIZE; i++){
 							if(ackresp[i] == 0){
 								break;
 							}
@@ -144,24 +162,25 @@ public class fileReceiver {
 						}
 						for(int j = 1; j < i; j++){
 							output.write(buffer[j], 16, bufferlen[j]);
-							System.out.println("write into file." + bufferlen[j]);
+							//System.out.println("write into file." + bufferlen[j]);
 						}
-						for(int j = i; j < 21; j++){
+						for(int j = i; j < BUFFERSIZE; j++){
 							ackresp[j - i + 1] = ackresp[j];
 							buffer[j - i + 1] = buffer[j];
 							bufferlen[j - i + 1] = bufferlen[j];
 						}
 						while(i > 1){
-							ackresp[22 - i] = 0;
-							buffer[22 - i] = null;
-							bufferlen[22 - i] = -1;
+							ackresp[BUFFERSIZE + 1 - i] = 0;
+							buffer[BUFFERSIZE + 1 - i] = null;
+							bufferlen[BUFFERSIZE - i] = -1;
 							i--;
 						}
 						if(lastPacketNumber != -1 && ackresp[0] > lastPacketNumber){
 							output.close();
+							//System.out.println("File closed===================");
 						}
 
-						System.out.println("Pkt " + sequenceNumber);
+						//System.out.println("Pkt " + sequenceNumber);
 						resp = new byte[100];
 						respb = ByteBuffer.wrap(resp);
 						respb.putLong(0);
@@ -174,7 +193,9 @@ public class fileReceiver {
 						respb.putLong(chksum);
 						DatagramPacket ack = new DatagramPacket(resp, 0, resp.length,
 								pkt.getSocketAddress());
+						//System.out.println("sendack:" + sequenceNumber);
 						sk.send(ack);
+						//System.out.println("=======================sendack:" + sequenceNumber);
 					}
 				}
 			}	
